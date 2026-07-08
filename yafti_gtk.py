@@ -340,7 +340,7 @@ class YaftiGTK(Gtk.Window):
             title = action.get('title', '')
             desc = action.get('description', '')
             if lowered in title.lower() or lowered in desc.lower():
-                matches.append(item)
+                matches.append(action)
 
         clear_container(self.search_results_box)
 
@@ -351,7 +351,7 @@ class YaftiGTK(Gtk.Window):
 
         if matches:
             for action in matches:
-                self.search_results_box.append(self.create_action_item(item['action']))
+                self.search_results_box.append(self.create_action_item(action))
         else:
             empty = Gtk.Label(label="No matches found")
             empty.set_xalign(0)
