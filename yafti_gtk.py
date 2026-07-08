@@ -365,6 +365,7 @@ class YaftiGTK(Gtk.Window):
         query = entry.get_text().strip()
         if not query:
             clear_container(self.search_results_box)
+            self.current_search_matches = []
             self.content_stack.set_visible_child_name("tabs")
             return
 
@@ -376,6 +377,7 @@ class YaftiGTK(Gtk.Window):
             if lowered in title.lower() or lowered in desc.lower():
                 matches.append(action)
 
+        self.current_search_matches = matches
         clear_container(self.search_results_box)
 
         header = Gtk.Label()
@@ -393,6 +395,7 @@ class YaftiGTK(Gtk.Window):
 
         self.search_results_box.set_visible(True)
         self.content_stack.set_visible_child_name("search")
+        self.refresh_current_page_actions()
 
     def on_action_clicked(self, _button, action):
         """Open a management modal or run the action directly."""
@@ -698,9 +701,13 @@ class YaftiGTK(Gtk.Window):
 
     def refresh_current_page_actions(self):
         """Run status check for the page the user is currently on."""
-        if not self.current_page_name:
-            return
-        actions_to_check = [ action for action in self.page_actions_map.get(self.current_page_name, []) if action.get('status_script') and self.action_status_widgets.get(action.get('id')).get_text() == "⏳ Checking..." ]
+        if hasattr(self, 'content_stack') and self.content_stack.get_visible_child_name() == "search":
+            actions = getattr(self, 'current_search_matches', [])
+        else:
+            if not self.current_page_name:
+                return
+            actions = self.page_actions_map.get(self.current_page_name, [])
+        actions_to_check = [ action for action in actions if action.get('status_script') and self.action_status_widgets.get(action.get('id')).get_text() == "⏳ Checking..." ]
 
         if not actions_to_check:
             return
