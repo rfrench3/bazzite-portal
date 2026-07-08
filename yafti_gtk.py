@@ -147,11 +147,14 @@ class YaftiGTK(Gtk.Window):
         tabs_container.append(self.tab_switcher)
         tabs_container.append(self.screen_stack)
 
+        # Map page actions for updating
+        self.page_actions_map = {}
         # Add tabs for each screen from YAML
         for screen in self.screens:
             page = self.create_screen_page(screen)
             label = screen.get('title', 'Tab')
             self.screen_stack.add_titled(page, label, label)
+            self.page_actions_map[label] = screen.get('actions', [])
 
         # Stack to switch between container and search results
         self.content_stack = Gtk.Stack()
@@ -183,8 +186,17 @@ class YaftiGTK(Gtk.Window):
         focus_controller = Gtk.EventControllerFocus.new()
         focus_controller.connect("enter", self.on_window_focus_in)
         self.add_controller(focus_controller)
-        GLib.idle_add(self.refresh_all_action_states)
+        self.current_page_name = None
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.screen_stack.connect("notify::visible-child", self.on_page_changed)
         self.connect("destroy", self.on_destroy)
+
+    def on_page_changed(self, stack, _pspec):
+        """Triggered to refresh actions if the visible page changes."""
+        visible_name = stack.get_visible_child_name()
+        if visible_name and visible_name != self.current_page_name:
+            self.current_page_name = visible_name
+        self.refresh_current_page_actions()
 
     def _load_css(self):
         """Loads CSS to highlight the selected action."""
@@ -684,14 +696,28 @@ class YaftiGTK(Gtk.Window):
         except Exception as e:
             return f"Terminal launch failed: {e}"
 
-    def refresh_all_action_states(self):
-        """Run status checks for all actions in a background thread pool."""
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
-        for action in self.actions_index:
-            action_id = action.get('id')
-            status_script = action.get('status_script')
-            if status_script:
-                self.executor.submit(self.fetch_and_update_single_status, action_id, status_script)
+    def refresh_current_page_actions(self):
+        """Run status check for the page the user is currently on."""
+        if not self.current_page_name:
+            return
+        actions_to_check = [ action for action in self.page_actions_map.get(self.current_page_name, []) if action.get('status_script') and self.action_status_widgets.get(action.get('id')).get_text() == "⏳ Checking..." ]
+
+        if not actions_to_check:
+            return
+        actions_iterator = iter(actions_to_check)
+        def _submit_next_task():
+            try:
+                action = next(actions_iterator)
+                self.action_status_widgets.get(action.get('id')).set_text("⏳ Fetching...")
+                self.executor.submit(
+                    self.fetch_and_update_single_status,
+                    action.get('id'),
+                    action.get('status_script')
+                )
+                return GLib.SOURCE_CONTINUE
+            except StopIteration:
+                return GLib.SOURCE_REMOVE
+        GLib.idle_add(_submit_next_task)
 
     def on_destroy(self, widget):
         """Let executor threads finish naturally"""
