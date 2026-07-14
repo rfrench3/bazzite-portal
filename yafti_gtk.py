@@ -13,7 +13,7 @@ import yaml
 
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import GLib, Gtk, Adw
+from gi.repository import GLib, Gtk
 
 # Constants
 APP_ID = 'io.github.ublue_os.yafti_gtk'
@@ -22,6 +22,7 @@ DEFAULT_WINDOW_WIDTH = 800
 DEFAULT_WINDOW_HEIGHT = 600
 STATUS_TIMEOUT_SECONDS = 3
 ACTION_DIALOG_WIDTH = 420
+DEFAULT_ACCENT = "#a47bea"
 
 
 def set_widget_margins(widget, top=10, bottom=10, start=10, end=10):
@@ -45,15 +46,14 @@ def clear_container(container):
 
 def show_error_dialog(parent, title, message):
     """Display an error dialog with the given title and message."""
-    dialog = Gtk.MessageDialog(
-        transient_for=parent,
-        message_type=Gtk.MessageType.ERROR,
-        buttons=Gtk.ButtonsType.OK,
-        text=title
+    dialog = Gtk.AlertDialog(
+        message=title,
+        detail=message,
+        buttons=["OK"]
     )
-    dialog.format_secondary_text(message)
-    dialog.run()
-    dialog.destroy()
+    def _on_dialog_dismissed(dialog, result):
+        dialog.choose_finish(result)
+    dialog.choose(parent, None, _on_dialog_dismissed)
 
 
 def initialize_gtk():
@@ -61,10 +61,11 @@ def initialize_gtk():
     GLib.set_prgname(APP_ID)
     Gtk.init()
     current_desktop = os.environ.get("XDG_CURRENT_DESKTOP","").upper()
-    print(current_desktop)
     if "KDE" not in current_desktop:
+        from gi.repository import Adw
+        if Gtk.Settings.get_default().get_property('gtk-application-prefer-dark-theme'):
+            Gtk.Settings.get_default().set_property('gtk-application-prefer-dark-theme', False)
         Adw.init()
-    
     try:
         Gtk.Window.set_default_icon_name(APP_ID)
     except Exception as e:
@@ -120,7 +121,7 @@ class YaftiGTK(Gtk.Window):
 
         # Search bar at the top
         search_entry = Gtk.SearchEntry()
-        search_entry.set_placeholder_text("Search Apps and Actions")
+        search_entry.set_placeholder_text(" Search Apps and Actions")
         set_widget_margins(search_entry, 10, 10, 10, 10)
         search_entry.connect("search-changed", self.on_search_changed)
         vbox.append(search_entry)
@@ -130,7 +131,7 @@ class YaftiGTK(Gtk.Window):
 
         # Stack for screen pages
         self.screen_stack = Gtk.Stack()
-        self.screen_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.screen_stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
         self.screen_stack.set_transition_duration(150)
         self.screen_stack.set_vexpand(True)
         self.screen_stack.set_hexpand(True)
@@ -174,7 +175,7 @@ class YaftiGTK(Gtk.Window):
         vbox.append(self.content_stack)
 
         # Load CSS for highlighting
-        self._load_css()
+        GLib.idle_add(self._load_css)
 
         self.connect("notify::is-active", self.on_window_active_changed)
         focus_controller = Gtk.EventControllerFocus.new()
@@ -183,17 +184,51 @@ class YaftiGTK(Gtk.Window):
 
     def _load_css(self):
         """Loads CSS to highlight the selected action."""
-        css = b"""
-        @keyframes flash-animation {
-            0% { border-color: @accent_color; }
-            50% { background-color: alpha(@accent_bg_color, 0.5); border-color: @accent_color; }
-            100% { border-color: @accent_color; }
-        }
+        def _get_system_accent_color():
+            """Fetches the system accent color via XDG Portal."""
+            import re
+            try:
+                out = subprocess.check_output([
+                    "gdbus", "call", "-e",
+                    "-d", "org.freedesktop.portal.Desktop",
+                    "-o", "/org/freedesktop/portal/desktop",
+                    "-m", "org.freedesktop.portal.Settings.Read",
+                    "'org.freedesktop.appearance'", "'accent-color'"
+                ], text=True, stderr=subprocess.DEVNULL)
 
-        .highlighted-action {
-            border: 2px solid @accent_color;
+                r, g, b = map(float, re.findall(r"\d+\.\d+", out)[:3])
+                return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+            except Exception:
+                return DEFAULT_ACCENT
+
+        accent = _get_system_accent_color()
+        css = f"""
+        @define-color accent {accent};
+        @define-color accent_bg alpha(@accent, 0.3);
+
+        slider,
+        .slider {{
+            min-height: 8px;
+            min-width: 8px;
+        }}
+
+        @keyframes flash-animation {{
+            0% {{
+                border-color: @accent;
+            }}
+            50% {{
+                background-color: @accent_bg;
+                border-color: @accent;
+            }}
+            100% {{
+                border-color: @accent;
+            }}
+        }}
+
+        .highlighted-action {{
+            border: 2px solid @accent;
             animation: flash-animation 1000ms ease-in-out 2;
-        }
+        }}
         """
         provider = Gtk.CssProvider()
         provider.load_from_data(css)
@@ -228,8 +263,7 @@ class YaftiGTK(Gtk.Window):
         set_widget_margins(page_box, 10, 10, 10, 10)
 
         for action in screen.get('actions', []):
-            action_box = self.create_action_item(action)
-            page_box.append(action_box)
+            page_box.append(self.create_action_item(action))
 
         scrolled.set_child(page_box)
         return scrolled
@@ -277,7 +311,7 @@ class YaftiGTK(Gtk.Window):
         index = []
         for screen in self.screens or []:
             for action in screen.get('actions', []):
-                index.append({'action': action})
+                index.append(action)
         return index
 
     def get_action_options(self, action):
@@ -285,7 +319,6 @@ class YaftiGTK(Gtk.Window):
         options = action.get('options')
         if isinstance(options, list) and options:
             return options
-
         return []
 
     def action_uses_modal(self, action):
@@ -303,12 +336,11 @@ class YaftiGTK(Gtk.Window):
 
         lowered = query.lower()
         matches = []
-        for item in self.actions_index:
-            action = item['action']
+        for action in self.actions_index:
             title = action.get('title', '')
             desc = action.get('description', '')
             if lowered in title.lower() or lowered in desc.lower():
-                matches.append(item)
+                matches.append(action)
 
         clear_container(self.search_results_box)
 
@@ -318,8 +350,8 @@ class YaftiGTK(Gtk.Window):
         self.search_results_box.append(header)
 
         if matches:
-            for item in matches:
-                self.search_results_box.append(self.create_action_item(item['action']))
+            for action in matches:
+                self.search_results_box.append(self.create_action_item(action))
         else:
             empty = Gtk.Label(label="No matches found")
             empty.set_xalign(0)
@@ -336,16 +368,13 @@ class YaftiGTK(Gtk.Window):
                 return
 
             error_message = self.launch_terminal(script)
-            if error_message is None:
+            if isinstance(error_message, subprocess.Popen):
                 return
 
             show_error_dialog(
                 self,
                 "No terminal available",
-                "Could not open a terminal automatically.\n\n"
-                + error_message
-                + "\n\nYou can also run the following command manually:\n\n"
-                + script
+                f"{error_message}\n\nCould not open a terminal automatically.\nYou can also run the following command manually:\n\n{script}"
             )
             return
 
@@ -387,7 +416,7 @@ class YaftiGTK(Gtk.Window):
     def on_window_active_changed(self, window, _pspec):
         """Refresh the active dialog when the portal window becomes active."""
         if window.get_property("is-active"):
-            self.refresh_active_dialog_if_needed()
+            GLib.idle_add(self.refresh_active_dialog_if_needed)
 
     def on_dialog_active_changed(self, dialog, _pspec, state):
         """Refresh the dialog when it becomes active again."""
@@ -396,12 +425,12 @@ class YaftiGTK(Gtk.Window):
 
     def on_window_focus_in(self, _controller):
         """Refresh the active dialog on focus return when needed."""
-        self.refresh_active_dialog_if_needed()
+        GLib.idle_add(self.refresh_active_dialog_if_needed)
         return False
 
     def on_dialog_focus_in(self, _controller, state):
         """Refresh the focused dialog after a launched action when needed."""
-        self.refresh_dialog_if_needed(state)
+        GLib.idle_add(self.refresh_dialog_if_needed, state)
         return False
 
     def refresh_active_dialog_if_needed(self):
@@ -411,7 +440,7 @@ class YaftiGTK(Gtk.Window):
     def refresh_dialog_if_needed(self, state):
         """Refresh a dialog when its status is dirty."""
         if self.should_refresh_dialog(state):
-            self.refresh_action_dialog(state)
+            self.refresh_action_dialog(state, background_only=True)
 
     def should_refresh_dialog(self, state):
         """Return True when a dialog should refresh its status on focus return."""
@@ -423,7 +452,7 @@ class YaftiGTK(Gtk.Window):
             return False
         return state.get('dirty', False)
 
-    def refresh_action_dialog(self, state):
+    def refresh_action_dialog(self, state, background_only=False):
         """Show the loading state and rerun the dialog status check."""
         if not state or state.get('closed'):
             return
@@ -437,7 +466,8 @@ class YaftiGTK(Gtk.Window):
         state['dirty'] = False
         state['request_id'] += 1
         request_id = state['request_id']
-        self.build_action_dialog_loading(state)
+        if not background_only:
+            self.build_action_dialog_loading(state)
 
         thread = threading.Thread(
             target=self.run_status_check,
@@ -467,7 +497,7 @@ class YaftiGTK(Gtk.Window):
         dialog.set_child(loading_box)
         dialog.set_visible(True)
 
-    def run_status_check(self, state, request_id, status_script):
+    def run_status_check(self, state, request_id, status_script, background_only=False):
         """Run the modal status check in the background."""
         status_token = "unknown"
         status_timed_out = False
@@ -498,9 +528,10 @@ class YaftiGTK(Gtk.Window):
             request_id,
             status_token,
             status_timed_out,
+            background_only,
         )
 
-    def finish_status_check(self, state, request_id, status_token, status_timed_out):
+    def finish_status_check(self, state, request_id, status_token, status_timed_out, background_only=False):
         """Update the dialog once the status check completes."""
         if not state or state.get('closed'):
             return False
@@ -509,8 +540,20 @@ class YaftiGTK(Gtk.Window):
         if state.get('request_id') != request_id:
             return False
 
-        self.build_action_dialog_content(state, status_token, status_timed_out)
+        if background_only and not state.get('loading'):
+            self.update_dialog_highlights(state, status_token)
+        else:
+            self.build_action_dialog_content(state, status_token, status_timed_out)
         return False
+
+    def update_dialog_highlights(self, state, status_token):
+        """Updates button highlights in-place without rebuilding the dialog layout."""
+        state['status_token'] = status_token
+        for button, option in state.get('option_buttons', []):
+            if self.option_is_highlighted(option, status_token):
+                button.add_css_class("suggested-action")
+            else:
+                button.remove_css_class("suggested-action")
 
     def build_action_dialog_content(self, state, status_token, status_timed_out=False):
         """Render the full action dialog after status is known."""
@@ -548,6 +591,7 @@ class YaftiGTK(Gtk.Window):
             root.append(status_label)
 
         actions_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        active_button = None
         for option in self.get_action_options(action):
             option_button = Gtk.Button(label=option.get('label', 'Run'))
             option_button.set_hexpand(True)
@@ -555,6 +599,7 @@ class YaftiGTK(Gtk.Window):
 
             if self.option_is_highlighted(option, status_token):
                 option_button.add_css_class("suggested-action")
+                active_button = option_button
 
             option_button.connect("clicked", self.on_option_clicked, state, option)
             actions_box.append(option_button)
@@ -567,6 +612,9 @@ class YaftiGTK(Gtk.Window):
 
         dialog.set_child(root)
         dialog.set_visible(True)
+
+        if active_button:
+            dialog.set_focus(active_button)
 
     def option_is_highlighted(self, option, status_token):
         """Return True when the option ID matches the current status token."""
@@ -583,26 +631,31 @@ class YaftiGTK(Gtk.Window):
         if not script:
             return
 
-        error_message = self.launch_terminal(script)
-        if error_message is None:
+        result = self.launch_terminal(script)
+
+        if isinstance(result, subprocess.Popen):
             if (state['action'].get('status_script') or "").strip():
                 state['dirty'] = True
+
+                # Create a thread to wait for the terminal to close, then update UI
+                def wait_and_refresh():
+                    result.wait()
+                    GLib.idle_add(self.refresh_action_dialog, state, True)
+
+                threading.Thread(target=wait_and_refresh, daemon=True).start()
             return
 
         show_error_dialog(
-            state['dialog'],
+            self,
             "No terminal available",
-            "Could not open a terminal automatically.\n\n"
-            + error_message
-            + "\n\nYou can also run the following command manually:\n\n"
-            + script
+            f"{result}\n\nCould not open a terminal automatically.\nYou can also run the following command manually:\n\n{script}"
         )
 
     def launch_terminal(self, script):
         """Attempt to run a command in a terminal. Returns None on success."""
         try:
-            subprocess.Popen(build_terminal_command(script))
-            return None
+            process = subprocess.Popen(build_terminal_command(script))
+            return process
         except FileNotFoundError:
             return "The default terminal launcher (xdg-terminal-exec) was not found."
         except Exception as e:
@@ -620,20 +673,17 @@ class YaftiGTK(Gtk.Window):
             current = parent
         return None
 
-    def _finish_highlight(self, button):
-        """Does the scroll."""
+    def _apply_highlight(self, button):
+        """Scroll and applies highlight"""
         scrolled = button.get_ancestor(Gtk.ScrolledWindow)
         if scrolled:
             try:
                 scrolled.scroll_to_child(button, None)
             except AttributeError:
                 pass
-        self._apply_highlight(button)
-
-    def _apply_highlight(self, button):
-        """Applies the highlight."""
         button.add_css_class("highlighted-action")
-        button.grab_focus()
+        if button.get_mapped():
+            self.set_focus(button)
 
     def highlight_action(self, action_id):
         if action_id not in self.action_widgets:
@@ -643,12 +693,7 @@ class YaftiGTK(Gtk.Window):
         page_name = self._get_page_for_widget(button)
         self.content_stack.set_visible_child_name("tabs")
         self.screen_stack.set_visible_child_name(page_name)
-
-        def _delayed_scroll():
-            """ Delay to make sure scrolling animation is played."""
-            self._finish_highlight(button)
-            return False
-        GLib.timeout_add(250, _delayed_scroll)
+        GLib.timeout_add(250, lambda: [self._apply_highlight(button), False][1])
 
 def main():
     # Parse command line arguments
