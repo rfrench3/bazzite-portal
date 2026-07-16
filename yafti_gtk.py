@@ -761,9 +761,9 @@ class YaftiGTK(Gtk.Window):
             return False
 
         token_lower = status_token.lower()
-        if token_lower in ["install", "active", "enable", "add"]:
+        if token_lower in ["install", "active", "enable", "add", "upgraded"]:
             emoji = "🟢"
-        elif token_lower in ["uninstall", "inactive", "disable", "disabled", "remove", "unset"]:
+        elif token_lower in ["uninstall", "inactive", "disable", "disabled", "remove", "unset", "mismatch"]:
             emoji = "🟠"
         elif token_lower == "unknown":
             emoji = "⚪"
