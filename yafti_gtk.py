@@ -270,6 +270,7 @@ class YaftiGTK(Gtk.Window):
         self.action_status_widgets = {}
 
         self.gamepad_handler = ManetteModule(self)
+        self.gamepad_handler.onBack = self.launch_exit_dialog
 
         # Load YAML configuration
         self.config = self.load_config(config_file)
@@ -1027,6 +1028,53 @@ class YaftiGTK(Gtk.Window):
         self.content_stack.set_visible_child_name("tabs")
         self.screen_stack.set_visible_child_name(page_name)
         GLib.timeout_add(250, lambda: [self._apply_highlight(button), False][1])
+
+    def launch_exit_dialog(self):
+        """Exit Application dialog for controller users."""
+        dialog = ManetteDialog(
+            title="Exit Portal",
+            transient_for=self,
+            modal=True,
+            destroy_with_parent=True,
+            default_width=ACTION_DIALOG_WIDTH,
+            default_height=-1,
+            resizable=False,
+        )
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        set_widget_margins(root, 16, 16, 16, 16)
+
+        title_label = Gtk.Label()
+        title_label.set_markup("<big><b>Exit Bazzite Portal?</b></big>")
+        title_label.set_xalign(0)
+        root.append(title_label)
+    
+        desc_label = Gtk.Label(label="This will exit the application.")
+        desc_label.set_xalign(0)
+        desc_label.set_wrap(True)
+        desc_label.add_css_class('dim-label')
+        root.append(desc_label)
+
+        actions_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+
+        exit_button = Gtk.Button(label="Exit")
+        exit_button.set_hexpand(True)
+        exit_button.set_halign(Gtk.Align.FILL)
+        exit_button.connect("clicked", lambda _button: self.close())
+        actions_box.append(exit_button)
+
+        cancel_button = Gtk.Button(label="Cancel")
+        cancel_button.set_hexpand(True)
+        cancel_button.set_halign(Gtk.Align.FILL)
+        cancel_button.connect("clicked", lambda _button: dialog.close())
+        actions_box.append(cancel_button)
+
+        root.append(actions_box)
+
+        dialog.set_child(root)
+        dialog.set_visible(True)
+
+        dialog.set_focus(exit_button)
 
 def main():
     # Parse command line arguments
