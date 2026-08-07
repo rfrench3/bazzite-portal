@@ -15,7 +15,8 @@ import yaml
 
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import GLib, Gtk
+gi.require_version("Manette", "0.2")
+from gi.repository import GLib, Gtk, Gio, GObject, Manette
 
 # Constants
 APP_ID = 'io.github.ublue_os.yafti_gtk'
@@ -65,9 +66,19 @@ def show_error_dialog(parent, title, message):
         detail=message,
         buttons=["OK"]
     )
+    cancellable = Gio.Cancellable()
+    
+    dialog.gamepad_support = ManetteModule(dialog)
+    dialog.gamepad_support.onBack = lambda: cancellable.cancel()
+    dialog.gamepad_support.onSelect = lambda: cancellable.cancel()
+    
     def _on_dialog_dismissed(dialog, result):
-        dialog.choose_finish(result)
-    dialog.choose(parent, None, _on_dialog_dismissed)
+        try:
+            dialog.choose_finish(result)
+        except GLib.Error:
+            pass
+        dialog.gamepad_support.destroy()
+    dialog.choose(parent, cancellable, _on_dialog_dismissed)
 
 
 def initialize_gtk():
@@ -118,6 +129,138 @@ def escape_markup(text):
     return GLib.markup_escape_text(text or "")
 
 
+class ManetteModule(GObject.Object):
+    """Implements extremely basic controller support. Dpad to move, A to activate the selected button, B to cancel dialogs.
+    Some components may need custom implementations, use setSelect and setCancel for that."""
+
+    def __init__(self, gtk_app):
+        super().__init__()
+        
+        self.parent = gtk_app
+        self.is_active = True
+        if isinstance(self.parent, Gtk.Window):
+            self.parent.connect("close-request", self.destroy)
+
+        # Keep track of connections to destroy() them properly
+        self._connections = []
+
+        self._connections.append((
+            gtk_app, self.parent.connect("notify::is-active", self.__on_active_window_changed)
+        ))
+
+        self.monitor = Manette.Monitor.new()
+        self._connections.append((
+            self.monitor, self.monitor.connect("device-connected", self.__on_device_connected)
+        ))
+
+        iterator = self.monitor.iterate()
+        while True:
+            success, device = iterator.next()
+            if not success:
+                break
+            self.__on_device_connected(self.monitor, device)
+
+        self.SELECT_BUTTON = 304
+        self.BACK_BUTTON = 305
+        self.DPAD_HAT_VERTICAL = 17
+        self.DPAD_HAT_HORIZONTAL = 16
+
+        self.onSelect = lambda: self.parent.get_focus().activate()
+        self.onBack = lambda: None     
+
+    def destroy(self, *args): 
+        self.is_active = False
+
+        for device, signal_id in self._connections:
+            device.disconnect(signal_id)
+        self._connections.clear()
+    
+        self.parent = None
+        self.monitor = None
+
+    def __on_device_connected(self, monitor, device):
+        self._connections.append((
+            device, device.connect("event", self.__on_device_event)
+        ))
+
+    def __on_device_event(self, device, event):
+        if not self.is_active:
+            return
+
+        event_type = event.get_event_type()
+
+        if event_type == Manette.EventType.EVENT_BUTTON_PRESS:
+            success, button = event.get_button()
+            if not success:
+                pass
+            if button == self.SELECT_BUTTON:
+                self.onSelect()
+            elif button == self.BACK_BUTTON:
+                self.onBack()
+
+        # All other events require Gtk.Widget
+        elif not isinstance(self.parent, Gtk.Widget):
+            pass
+
+        elif event_type == Manette.EventType.EVENT_ABSOLUTE:
+            success, axis, value = event.get_absolute()
+            if not success:
+                pass
+            # Value is typically a float between -1.0 and 1.0
+
+        # dpad events (the parent must be a Gtk.Widget)
+        elif event_type == Manette.EventType.EVENT_HAT:
+            success, hat, value = event.get_hat()
+            if not success:
+                pass
+            if hat == self.DPAD_HAT_VERTICAL:
+                if value == -1:
+                    self.parent.child_focus(Gtk.DirectionType.UP)
+                elif value == 1:
+                    self.parent.child_focus(Gtk.DirectionType.DOWN)
+            elif hat == self.DPAD_HAT_HORIZONTAL:
+                if value == -1:
+                    self.parent.child_focus(Gtk.DirectionType.LEFT)
+                elif value == 1:
+                    self.parent.child_focus(Gtk.DirectionType.RIGHT)
+
+    def __on_active_window_changed(self, window, param):
+        self.is_active = window.get_property("is-active")
+
+    def setSelect(self, function):
+        """Set the lambda that runs when the select button is pressed."""
+        self.onSelect = function
+
+    def setBack(self, function):
+        """Set the lambda that runs when the back button is pressed."""
+        self.onBack = function
+
+
+class ManetteDialog(Gtk.Window):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.gamepad_handler = ManetteModule(self)
+        self.gamepad_handler.setBack(self.close)
+        
+        self.connect("close-request", self._on_close_request)
+
+        layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.set_child(layout)
+
+        content_label = Gtk.Label(label="Your content here")
+        layout.append(content_label)
+
+        close_button = Gtk.Button(label="Close")
+        close_button.connect("clicked", lambda btn: self.close())
+        layout.append(close_button)
+
+    def _on_close_request(self, window):
+        self.gamepad_handler.destroy()
+        self.gamepad_handler = None
+        return False
+
+
 class YaftiGTK(Gtk.Window):
     def __init__(self, config_file='yafti.yml'):
         super().__init__(title=APP_TITLE)
@@ -125,6 +268,8 @@ class YaftiGTK(Gtk.Window):
         self.active_dialog_state = None
         self.action_widgets = {}  # action_id -> (button)
         self.action_status_widgets = {}
+
+        self.gamepad_handler = ManetteModule(self)
 
         # Load YAML configuration
         self.config = self.load_config(config_file)
@@ -470,11 +615,15 @@ class YaftiGTK(Gtk.Window):
             )
             return
 
-        dialog = Gtk.Dialog(title=action.get('title', 'Action'), transient_for=self)
-        dialog.set_modal(True)
-        dialog.set_destroy_with_parent(True)
-        dialog.set_default_size(ACTION_DIALOG_WIDTH, -1)
-        dialog.set_resizable(False)
+        dialog = ManetteDialog(
+            title=action.get("title", "Action"),
+            transient_for=self,
+            modal=True,
+            destroy_with_parent=True,
+            default_width=ACTION_DIALOG_WIDTH,
+            default_height=-1,
+            resizable=False,
+        )
 
         state = {
             'action': action,
