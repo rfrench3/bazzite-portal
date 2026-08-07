@@ -164,6 +164,11 @@ class ManetteModule(GObject.Object):
         self.BACK_BUTTON = 305
         self.DPAD_HAT_VERTICAL = 17
         self.DPAD_HAT_HORIZONTAL = 16
+        self.LEFT_STICK_X = 0
+        self.LEFT_STICK_Y = 1
+
+        # Allow the left stick to mimic the Dpad
+        self.previous_val_y = 0.0
 
         self.onSelect = lambda: self.parent.get_focus().activate()
         self.onBack = lambda: None     
@@ -206,7 +211,21 @@ class ManetteModule(GObject.Object):
             success, axis, value = event.get_absolute()
             if not success:
                 pass
-            # Value is typically a float between -1.0 and 1.0
+            if axis == self.LEFT_STICK_Y:
+                if value > 0.8 and not self.previous_val_y > 0.8:
+                    self.parent.child_focus(Gtk.DirectionType.DOWN)
+                elif value < -0.8 and not self.previous_val_y < -0.8:
+                    self.parent.child_focus(Gtk.DirectionType.UP)
+                    
+                self.previous_val_y = value
+                
+            elif axis == self.LEFT_STICK_X:
+                if value > 0.8 and not self.previous_val_x > 0.8:
+                    self.parent.child_focus(Gtk.DirectionType.RIGHT)
+                elif value < -0.8 and not self.previous_val_x < -0.8:
+                    self.parent.child_focus(Gtk.DirectionType.LEFT)
+                    
+                self.previous_val_x = value
 
         # dpad events (the parent must be a Gtk.Widget)
         elif event_type == Manette.EventType.EVENT_HAT:
