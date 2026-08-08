@@ -129,12 +129,47 @@ def escape_markup(text):
     return GLib.markup_escape_text(text or "")
 
 
+class KeyRepeater:
+    """Implements key repeat delay for holding down controller buttons."""
+    
+    def __init__(self, delay, repeat_rate, function):
+        self._repeat_timer_id = 0
+        self.RATE = repeat_rate
+        self.function = function
+
+        self.function()
+        self._delay_timer_id = GLib.timeout_add(delay, self._delay_timer)
+
+    def stop(self):
+        if self._delay_timer_id > 0:
+            GLib.source_remove(self._delay_timer_id)
+            self._delay_timer_id = 0
+        if self._repeat_timer_id > 0:
+            GLib.source_remove(self._repeat_timer_id)
+            self._repeat_timer_id = 0
+
+    def _delay_timer(self):
+        self._delay_timer_id = 0
+        if self._repeat_timer_id:
+            return GLib.SOURCE_REMOVE
+        self.function()
+        self._repeat_timer_id = GLib.timeout_add(self.RATE, self._repeat_timer)
+        return GLib.SOURCE_REMOVE
+        
+    def _repeat_timer(self):
+        self.function()
+        return GLib.SOURCE_CONTINUE
+
+
 class ManetteModule(GObject.Object):
-    """Implements extremely basic controller support. Dpad to move, A to activate the selected button, B to cancel dialogs.
+    """Implements basic controller support. Dpad to move, A to activate the selected button, B to cancel dialogs/exit app.
     Some components may need custom implementations, use setSelect and setCancel for that."""
 
     def __init__(self, gtk_app):
         super().__init__()
+
+        # Keeps track of buttons for KeyRepeater
+        self.held_buttons = {}
         
         self.parent = gtk_app
         self.is_active = True
@@ -169,6 +204,7 @@ class ManetteModule(GObject.Object):
 
         # Allow the left stick to mimic the Dpad
         self.previous_val_y = 0.0
+        self.previous_val_x = 0.0
 
         self.onSelect = lambda: self.parent.get_focus().activate()
         self.onBack = lambda: None     
@@ -207,23 +243,44 @@ class ManetteModule(GObject.Object):
         elif not isinstance(self.parent, Gtk.Widget):
             pass
 
-        elif event_type == Manette.EventType.EVENT_ABSOLUTE:
+        moveUp = lambda: self.parent.child_focus(Gtk.DirectionType.UP)
+        moveDown = lambda: self.parent.child_focus(Gtk.DirectionType.DOWN)
+        moveLeft = lambda: self.parent.child_focus(Gtk.DirectionType.LEFT)
+        moveRight = lambda: self.parent.child_focus(Gtk.DirectionType.RIGHT)
+
+        if event_type == Manette.EventType.EVENT_ABSOLUTE:
             success, axis, value = event.get_absolute()
             if not success:
                 pass
             if axis == self.LEFT_STICK_Y:
-                if value > 0.8 and not self.previous_val_y > 0.8:
-                    self.parent.child_focus(Gtk.DirectionType.DOWN)
-                elif value < -0.8 and not self.previous_val_y < -0.8:
-                    self.parent.child_focus(Gtk.DirectionType.UP)
+                is_down = value > 0.8
+                is_up = value < -0.8
+                was_down = self.previous_val_y > 0.8
+                was_up = self.previous_val_y < -0.8
+                
+                if is_down and not was_down:
+                    self.__set_repeater("DPAD_DOWN", True, moveDown)
+                elif is_up and not was_up:
+                    self.__set_repeater("DPAD_UP", True, moveUp)
+                elif not is_down and not is_up and (was_down or was_up):
+                    self.__set_repeater("DPAD_UP", False)
+                    self.__set_repeater("DPAD_DOWN", False)
                     
                 self.previous_val_y = value
                 
             elif axis == self.LEFT_STICK_X:
-                if value > 0.8 and not self.previous_val_x > 0.8:
-                    self.parent.child_focus(Gtk.DirectionType.RIGHT)
-                elif value < -0.8 and not self.previous_val_x < -0.8:
-                    self.parent.child_focus(Gtk.DirectionType.LEFT)
+                is_right = value > 0.8
+                is_left = value < -0.8
+                was_right = self.previous_val_x > 0.8
+                was_left = self.previous_val_x < -0.8
+                
+                if is_right and not was_right:
+                    self.__set_repeater("DPAD_RIGHT", True, moveRight)
+                elif is_left and not was_left:
+                    self.__set_repeater("DPAD_LEFT", True, moveLeft)
+                elif not is_right and not is_left and (was_right or was_left):
+                    self.__set_repeater("DPAD_LEFT", False)
+                    self.__set_repeater("DPAD_RIGHT", False)
                     
                 self.previous_val_x = value
 
@@ -234,17 +291,32 @@ class ManetteModule(GObject.Object):
                 pass
             if hat == self.DPAD_HAT_VERTICAL:
                 if value == -1:
-                    self.parent.child_focus(Gtk.DirectionType.UP)
+                    self.__set_repeater("DPAD_UP", True, moveUp)
                 elif value == 1:
-                    self.parent.child_focus(Gtk.DirectionType.DOWN)
+                    self.__set_repeater("DPAD_DOWN", True, moveDown)
+                else:
+                    self.__set_repeater("DPAD_UP", False)
+                    self.__set_repeater("DPAD_DOWN", False)
             elif hat == self.DPAD_HAT_HORIZONTAL:
                 if value == -1:
-                    self.parent.child_focus(Gtk.DirectionType.LEFT)
+                    self.__set_repeater("DPAD_LEFT", True, moveLeft)
                 elif value == 1:
-                    self.parent.child_focus(Gtk.DirectionType.RIGHT)
+                    self.__set_repeater("DPAD_RIGHT", True, moveRight)
+                else:
+                    self.__set_repeater("DPAD_LEFT", False)
+                    self.__set_repeater("DPAD_RIGHT", False)
 
     def __on_active_window_changed(self, window, param):
         self.is_active = window.get_property("is-active")
+
+    def __set_repeater(self, button, state, function = lambda: None):
+        if state:
+            if button not in self.held_buttons:
+                self.held_buttons[button] = KeyRepeater(delay=600, repeat_rate=40, function=function)
+        else:
+            if button in self.held_buttons:
+                repeater = self.held_buttons.pop(button)
+                repeater.stop()
 
     def setSelect(self, function):
         """Set the lambda that runs when the select button is pressed."""
