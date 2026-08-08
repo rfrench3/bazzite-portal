@@ -163,7 +163,7 @@ class KeyRepeater:
 
 class ManetteModule(GObject.Object):
     """Implements basic controller support. Dpad to move, A to activate the selected button, B to cancel dialogs/exit app.
-    Some components may need custom implementations, use setSelect and setCancel for that."""
+    Custom functions can replace onSelect, onBack, onLeftBumper, and onRightBumper when necessary."""
 
     def __init__(self, gtk_app):
         super().__init__()
@@ -197,6 +197,8 @@ class ManetteModule(GObject.Object):
 
         self.SELECT_BUTTON = 304
         self.BACK_BUTTON = 305
+        self.LEFT_BUMPER = 310
+        self.RIGHT_BUMPER = 311
         self.DPAD_HAT_VERTICAL = 17
         self.DPAD_HAT_HORIZONTAL = 16
         self.LEFT_STICK_X = 0
@@ -207,7 +209,9 @@ class ManetteModule(GObject.Object):
         self.previous_val_x = 0.0
 
         self.onSelect = lambda: self.parent.get_focus().activate()
-        self.onBack = lambda: None     
+        self.onBack = lambda: None
+        self.onLeftBumper = lambda: None
+        self.onRightBumper = lambda: None
 
     def destroy(self, *args): 
         self.is_active = False
@@ -238,6 +242,10 @@ class ManetteModule(GObject.Object):
                 self.onSelect()
             elif button == self.BACK_BUTTON:
                 self.onBack()
+            elif button == self.LEFT_BUMPER:
+                self.onLeftBumper()
+            elif button == self.RIGHT_BUMPER:
+                self.onRightBumper()
 
         # All other events require Gtk.Widget
         elif not isinstance(self.parent, Gtk.Widget):
@@ -318,21 +326,13 @@ class ManetteModule(GObject.Object):
                 repeater = self.held_buttons.pop(button)
                 repeater.stop()
 
-    def setSelect(self, function):
-        """Set the lambda that runs when the select button is pressed."""
-        self.onSelect = function
-
-    def setBack(self, function):
-        """Set the lambda that runs when the back button is pressed."""
-        self.onBack = function
-
 
 class ManetteDialog(Gtk.Window):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
         self.gamepad_handler = ManetteModule(self)
-        self.gamepad_handler.setBack(self.close)
+        self.gamepad_handler.onBack = self.close
         
         self.connect("close-request", self._on_close_request)
 
@@ -359,9 +359,6 @@ class YaftiGTK(Gtk.Window):
         self.active_dialog_state = None
         self.action_widgets = {}  # action_id -> (button)
         self.action_status_widgets = {}
-
-        self.gamepad_handler = ManetteModule(self)
-        self.gamepad_handler.onBack = self.launch_exit_dialog
 
         # Load YAML configuration
         self.config = self.load_config(config_file)
@@ -460,6 +457,11 @@ class YaftiGTK(Gtk.Window):
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         self.screen_stack.connect("notify::visible-child", self.on_page_changed)
         self.connect("destroy", self.on_destroy)
+
+        self.gamepad_handler = ManetteModule(self)
+        self.gamepad_handler.onBack = self.launch_exit_dialog
+        self.gamepad_handler.onLeftBumper = lambda: self.cycle_stack(False)
+        self.gamepad_handler.onRightBumper = lambda: self.cycle_stack(True)
 
     def on_page_changed(self, stack, _pspec):
         """Triggered to refresh actions if the visible page changes."""
@@ -1166,6 +1168,25 @@ class YaftiGTK(Gtk.Window):
         dialog.set_visible(True)
 
         dialog.set_focus(exit_button)
+
+    def cycle_stack(self, forward=True):
+        """Allows controllers to use bumpers to switch pages."""
+        pages = []
+        page = self.screen_stack.get_first_child()
+        while page is not None:
+            pages.append(page)
+            page = page.get_next_sibling()
+    
+        if not pages:
+            return
+    
+        current = self.screen_stack.get_visible_child()
+        current_index = pages.index(current) if current in pages else 0
+    
+        # Calculate target index with boundaries
+        target_index = max(0, min(current_index + (1 if forward else -1), len(pages) - 1))
+    
+        self.screen_stack.set_visible_child(pages[target_index])
 
 def main():
     # Parse command line arguments
